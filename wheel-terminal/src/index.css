@@ -1,0 +1,117 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  font-family: 'IBM Plex Mono', monospace !important;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #070C09;
+  color: #E0F0E8;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+@keyframes fadeUp {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseDanger {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulseGreen {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.animate-fade-up {
+  animation: fadeUp 200ms ease-out forwards;
+}
+
+.animate-pulse-danger {
+  animation: pulseDanger 1.4s infinite;
+}
+
+.animate-spin-slow {
+  animation: spin 700ms linear infinite;
+}
+
+.animate-pulse-green {
+  animation: pulseGreen 2s ease-in-out infinite;
+}
+
+.progress-bar-fill {
+  transition: width 500ms ease;
+}
+
+.tab-active {
+  color: #00DC78;
+  border-bottom: 2px solid #00DC78;
+}
+
+.card-border {
+  border: 1px solid rgba(255,255,255,0.07);
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #0D1410;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 2px;
+}
+
+input, select, textarea {
+  background: #070C09;
+  color: #E0F0E8;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  font-family: 'IBM Plex Mono', monospace !important;
+  font-size: 14px;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #00DC78;
+}
+
+select option {
+  background: #0D1410;
+  color: #E0F0E8;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(0,220,120,0.2);
+  border-top-color: #00DC78;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  display: inline-block;
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
