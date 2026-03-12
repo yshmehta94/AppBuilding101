@@ -1,53 +1,43 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { LayoutDashboard, List, Bell, BarChart2, Brain, Settings as SettingsIcon } from 'lucide-react';
-import {
-  lsGet, lsSet, SAMPLE_POSITIONS, DEFAULT_SETTINGS,
-  getStatus, STATUS, STATUS_ORDER,
-} from './utils/calculations';
+import { LayoutDashboard, List, Plus, Search, BarChart2, Settings as SettingsIcon } from 'lucide-react';
+import useStore from './store';
+import { getRuleAlerts } from './utils/calculations';
 import Dashboard from './components/tabs/Dashboard';
 import Positions from './components/tabs/Positions';
-import Alerts from './components/tabs/Alerts';
+import TradeLogger from './components/tabs/TradeLogger';
+import ScanTab from './components/tabs/ScanTab';
 import Analytics from './components/tabs/Analytics';
-import AIInsights from './components/tabs/AIInsights';
+import Alerts from './components/tabs/Alerts';
 import SettingsTab from './components/tabs/Settings';
 
 const TABS = [
-  { id: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+  { id: 'dashboard', label: 'Home',      Icon: LayoutDashboard },
   { id: 'positions', label: 'Positions', Icon: List },
-  { id: 'alerts', label: 'Alerts', Icon: Bell },
+  { id: 'log',       label: 'Log',       Icon: Plus },
+  { id: 'scan',      label: 'Scan',      Icon: Search },
   { id: 'analytics', label: 'Analytics', Icon: BarChart2 },
-  { id: 'ai', label: 'AI', Icon: Brain },
-  { id: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
 const AV_DELAY_MS = 800;
-const REFRESH_INTERVAL_MS = 30000;
+const REFRESH_INTERVAL_MS = 60000;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [positions, setPositions] = useState(() =>
-    lsGet('wt_positions', SAMPLE_POSITIONS)
-  );
-  const [closedTrades, setClosedTrades] = useState(() =>
-    lsGet('wt_closed', [])
-  );
-  const [settings, setSettings] = useState(() =>
-    lsGet('wt_settings', DEFAULT_SETTINGS)
-  );
-  const [stockPrices, setStockPrices] = useState({});
-  const [pricesConnected, setPricesConnected] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState(null);
-  const [isFetching, setIsFetching] = useState(false);
-  const [apiLimitReached, setApiLimitReached] = useState(false);
-  const [banner, setBanner] = useState(null);
-  const [focusTicker, setFocusTicker] = useState(null);
-  const isFetchingRef = useRef(false);
-  const refreshTimerRef = useRef(null);
-  const limitReachedRef = useRef(false);
+  const [showSettings, setShowSettings] = useState(false);
 
-  useEffect(() => { lsSet('wt_positions', positions); }, [positions]);
-  useEffect(() => { lsSet('wt_closed', closedTrades); }, [closedTrades]);
-  useEffect(() => { lsSet('wt_settings', settings); }, [settings]);
+  const {
+    chains, settings,
+    stockPrices, setStockPrice,
+    isFetching, setFetching,
+    pricesConnected, setPricesConnected,
+    lastRefresh, setLastRefresh,
+    apiLimitReached, setApiLimitReached,
+    banner,
+  } = useStore();
+
+  const isFetchingRef = useRef(false);
+  const limitReachedRef = useRef(false);
+  const refreshTimerRef = useRef(null);
 
   const fetchPrice = useCallback(async (ticker, apiKey) => {
     const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${apiKey}`;
@@ -57,9 +47,7 @@ export default function App() {
       const res = await fetch(url, { signal: controller.signal });
       const data = await res.json();
       clearTimeout(timeout);
-      if (data['Note'] || data['Information']) {
-        return { limited: true };
-      }
+      if (data['Note'] || data['Information']) return { limited: true };
       const q = data['Global Quote'];
       if (!q || !q['05. price']) return null;
       return {
@@ -74,22 +62,22 @@ export default function App() {
     }
   }, []);
 
-  const refreshPrices = useCallback(async (positionsOverride) => {
+  const refreshPrices = useCallback(async () => {
     if (isFetchingRef.current) return;
-    const activePosns = positionsOverride || positions;
-    const tickers = [...new Set(activePosns.map((p) => p.ticker))];
+    const openChains = chains.filter(c => c.status === 'open');
+    const tickers = [...new Set(openChains.map(c => c.ticker))];
     if (!tickers.length) return;
-    const apiKey = settings.avKey || import.meta.env.VITE_ALPHA_VANTAGE_KEY || '';
+    const apiKey = settings.avKey;
     if (!apiKey) { setPricesConnected(false); return; }
 
     isFetchingRef.current = true;
-    setIsFetching(true);
+    setFetching(true);
     limitReachedRef.current = false;
     setApiLimitReached(false);
     let anySuccess = false;
 
     for (let i = 0; i < tickers.length; i++) {
-      if (i > 0) await new Promise((r) => setTimeout(r, AV_DELAY_MS));
+      if (i > 0) await new Promise(r => setTimeout(r, AV_DELAY_MS));
       if (limitReachedRef.current) break;
       const result = await fetchPrice(tickers[i], apiKey);
       if (result?.limited) {
@@ -99,154 +87,74 @@ export default function App() {
       }
       if (result) {
         anySuccess = true;
-        setStockPrices((prev) => ({ ...prev, [result.ticker]: result }));
+        setStockPrice(result.ticker, result);
       }
     }
 
     isFetchingRef.current = false;
-    setIsFetching(false);
+    setFetching(false);
     setPricesConnected(anySuccess);
-    setLastRefresh(new Date());
-  }, [positions, settings.avKey, fetchPrice]);
+    setLastRefresh(new Date().toISOString());
+  }, [chains, settings.avKey, fetchPrice, setFetching, setStockPrice, setPricesConnected, setLastRefresh, setApiLimitReached]);
 
   useEffect(() => {
     refreshPrices();
-    refreshTimerRef.current = setInterval(() => refreshPrices(), REFRESH_INTERVAL_MS);
+    refreshTimerRef.current = setInterval(refreshPrices, REFRESH_INTERVAL_MS);
     return () => clearInterval(refreshTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const prevTickersRef = useRef('');
-  useEffect(() => {
-    const current = [...new Set(positions.map((p) => p.ticker))].sort().join(',');
-    if (current !== prevTickersRef.current && prevTickersRef.current !== '') {
-      prevTickersRef.current = current;
-      refreshPrices(positions);
-    } else {
-      prevTickersRef.current = current;
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [positions]);
+  const alertCount = getRuleAlerts(chains, stockPrices, settings).length;
+  const lastRefreshTime = lastRefresh
+    ? new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
 
-  const addPosition = useCallback((pos) => {
-    const newPos = {
-      id: Date.now(),
-      contracts: 1,
-      rollCount: 0,
-      openDate: new Date().toISOString().split('T')[0],
-      ...pos,
-      ticker: (pos.ticker || '').toUpperCase(),
-      collateral: pos.collateral || (pos.strike * 100 * (pos.contracts || 1)),
-    };
-    setPositions((prev) => [...prev, newPos]);
-  }, []);
-
-  const updatePosition = useCallback((id, updates) => {
-    setPositions((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
+  if (showSettings) {
+    return (
+      <div className="flex flex-col min-h-screen bg-bg text-primary-text font-mono">
+        <header
+          className="flex items-center justify-between px-4 py-3 border-b shrink-0"
+          style={{ borderColor: 'rgba(255,255,255,0.07)', background: '#0D1410' }}
+        >
+          <button
+            onClick={() => setShowSettings(false)}
+            className="text-muted-text text-sm font-bold"
+            style={{ minHeight: 44, minWidth: 60 }}
+          >
+            ← Back
+          </button>
+          <span className="text-primary-green font-bold text-sm tracking-widest">SETTINGS</span>
+          <div style={{ width: 60 }} />
+        </header>
+        <main className="flex-1 overflow-y-auto pb-6">
+          <SettingsTab />
+        </main>
+      </div>
     );
-  }, []);
-
-  const removePosition = useCallback((id) => {
-    setPositions((prev) => prev.filter((p) => p.id !== id));
-  }, []);
-
-  const closePosition = useCallback((pos, closeData) => {
-    const closeDate = closeData.closeDate || new Date().toISOString().split('T')[0];
-    const daysHeld = pos.openDate
-      ? Math.max(0, Math.ceil((new Date(closeDate) - new Date(pos.openDate)) / 86400000))
-      : 0;
-    const closePremium = parseFloat(closeData.closePremium) || 0;
-    const realizedPnl = (pos.premium - closePremium) * (pos.contracts || 1) * 100;
-    const capPct = pos.premium > 0
-      ? Math.max(0, Math.min(100, ((pos.premium - closePremium) / pos.premium) * 100))
-      : 0;
-
-    const closed = { ...pos, ...closeData, closeDate, daysHeld, realizedPnl, capturePct: capPct, closePremium };
-    setClosedTrades((prev) => [closed, ...prev]);
-    removePosition(pos.id);
-  }, [removePosition]);
-
-  const markRolled = useCallback((id) => {
-    setPositions((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, rollCount: (p.rollCount || 0) + 1 } : p
-      )
-    );
-  }, []);
-
-  const showBanner = useCallback((msg, type = 'error') => {
-    setBanner({ msg, type });
-    setTimeout(() => setBanner(null), 5000);
-  }, []);
-
-  const navigateToPosition = useCallback((ticker) => {
-    setFocusTicker(ticker);
-    setActiveTab('positions');
-  }, []);
-
-  const alertCount = positions.filter((p) => {
-    const sp = stockPrices[p.ticker];
-    return getStatus(p, sp?.price) !== STATUS.HOLD;
-  }).length;
-
-  const sortedPositions = [...positions].sort((a, b) => {
-    const sa = getStatus(a, stockPrices[a.ticker]?.price);
-    const sb = getStatus(b, stockPrices[b.ticker]?.price);
-    return STATUS_ORDER.indexOf(sa) - STATUS_ORDER.indexOf(sb);
-  });
-
-  const sharedProps = {
-    positions,
-    sortedPositions,
-    closedTrades,
-    settings,
-    setSettings,
-    stockPrices,
-    pricesConnected,
-    lastRefresh,
-    isFetching,
-    apiLimitReached,
-    addPosition,
-    updatePosition,
-    removePosition,
-    closePosition,
-    markRolled,
-    refreshPrices,
-    showBanner,
-    navigateToPosition,
-    focusTicker,
-    setFocusTicker,
-    setClosedTrades,
-    setPositions,
-  };
+  }
 
   return (
     <div className="flex flex-col min-h-screen bg-bg text-primary-text font-mono">
-      {/* Top Bar */}
+      {/* Top bar */}
       <header
         className="flex items-center justify-between px-4 py-3 border-b shrink-0"
         style={{ borderColor: 'rgba(255,255,255,0.07)', background: '#0D1410' }}
       >
         <div className="flex items-center gap-2">
           <span className="text-primary-green font-bold text-sm tracking-widest">⚙ WHEEL</span>
-          <span className="text-muted-text text-xs">@wheelsniper</span>
+          <span className="text-muted-text text-xs">TERMINAL</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span
-            className={`w-2 h-2 rounded-full ${pricesConnected ? 'bg-primary-green animate-pulse-green' : 'bg-danger-red'}`}
-          />
+        <div className="flex items-center gap-3">
+          <span className={`w-2 h-2 rounded-full ${pricesConnected ? 'bg-primary-green animate-pulse-green' : 'bg-muted-text opacity-40'}`} />
           <span className="text-muted-text text-xs">
-            {isFetching ? 'loading…' : lastRefresh
-              ? lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'offline'}
+            {isFetching ? 'loading…' : lastRefreshTime || 'no API'}
           </span>
           <button
             onClick={() => refreshPrices()}
             disabled={isFetching}
             className="flex items-center justify-center text-muted-text hover:text-primary-green transition-colors"
-            style={{ minWidth: 44, minHeight: 44 }}
-            aria-label="Refresh"
+            style={{ minWidth: 36, minHeight: 44 }}
+            aria-label="Refresh prices"
           >
             {isFetching ? (
               <span className="spinner" />
@@ -258,20 +166,28 @@ export default function App() {
               </svg>
             )}
           </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            className="flex items-center justify-center text-muted-text hover:text-primary-text transition-colors"
+            style={{ minWidth: 36, minHeight: 44 }}
+            aria-label="Settings"
+          >
+            <SettingsIcon size={15} />
+          </button>
         </div>
       </header>
 
+      {/* Banners */}
       {apiLimitReached && (
         <div className="shrink-0 px-4 py-2 text-xs font-bold text-center text-bg bg-warning-yellow">
-          ⚠ Alpha Vantage daily limit reached — prices may be stale
+          ⚠ Alpha Vantage daily limit — prices may be stale
         </div>
       )}
-
       {banner && (
         <div
           className={`shrink-0 px-4 py-2 text-xs font-bold text-center animate-fade-up ${
-            banner.type === 'error' ? 'bg-danger-red text-white'
-              : banner.type === 'success' ? 'bg-primary-green text-bg'
+            banner.type === 'success' ? 'bg-primary-green text-bg'
+              : banner.type === 'error' ? 'bg-danger-red text-white'
               : 'bg-warning-yellow text-bg'
           }`}
         >
@@ -279,23 +195,26 @@ export default function App() {
         </div>
       )}
 
+      {/* Main content */}
       <main className="flex-1 overflow-y-auto pb-20">
-        {activeTab === 'dashboard' && <Dashboard key="dashboard" {...sharedProps} />}
-        {activeTab === 'positions' && <Positions key="positions" {...sharedProps} />}
-        {activeTab === 'alerts' && <Alerts key="alerts" {...sharedProps} />}
-        {activeTab === 'analytics' && <Analytics key="analytics" {...sharedProps} />}
-        {activeTab === 'ai' && <AIInsights key="ai" {...sharedProps} />}
-        {activeTab === 'settings' && <SettingsTab key="settings" {...sharedProps} />}
+        {activeTab === 'dashboard' && <Dashboard key="dash" setActiveTab={setActiveTab} />}
+        {activeTab === 'positions' && <Positions key="pos"  setActiveTab={setActiveTab} />}
+        {activeTab === 'log'       && <TradeLogger key="log" setActiveTab={setActiveTab} />}
+        {activeTab === 'scan'      && <ScanTab key="scan" />}
+        {activeTab === 'analytics' && <Analytics key="analytics" />}
+        {activeTab === 'alerts'    && <Alerts key="alerts" setActiveTab={setActiveTab} />}
       </main>
 
-      {/* Bottom Nav */}
+      {/* Bottom nav */}
       <nav
         className="fixed bottom-0 left-0 right-0 flex border-t z-50"
         style={{ borderColor: 'rgba(255,255,255,0.07)', background: '#0D1410' }}
       >
-        {TABS.map(({ id, label, Icon }) => {
+        {TABS.map(({ id, label, Icon: TabIcon }) => { // eslint-disable-line no-unused-vars
           const isActive = activeTab === id;
-          const showBadge = id === 'alerts' && alertCount > 0;
+          const isLog = id === 'log';
+          const showBadge = id === 'dashboard' && alertCount > 0;
+
           return (
             <button
               key={id}
@@ -303,18 +222,32 @@ export default function App() {
               className="flex-1 flex flex-col items-center justify-center gap-0.5 py-2 relative"
               style={{ minHeight: 56 }}
             >
-              <div className="relative">
-                <Icon size={18} color={isActive ? '#00DC78' : '#7A9A88'} />
-                {showBadge && (
-                  <span
-                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center text-bg font-bold"
-                    style={{ background: '#FF4060', fontSize: 9 }}
+              {isLog ? (
+                <>
+                  <div
+                    className="w-9 h-9 rounded-full flex items-center justify-center"
+                    style={{ background: isActive ? '#00DC78' : 'rgba(0,220,120,0.15)' }}
                   >
-                    {alertCount}
-                  </span>
-                )}
-              </div>
-              <span style={{ color: isActive ? '#00DC78' : '#7A9A88', fontSize: 10 }}>{label}</span>
+                    <TabIcon size={18} color={isActive ? '#070C09' : '#00DC78'} />
+                  </div>
+                  <span style={{ color: isActive ? '#00DC78' : '#7A9A88', fontSize: 10 }}>{label}</span>
+                </>
+              ) : (
+                <>
+                  <div className="relative">
+                    <TabIcon size={18} color={isActive ? '#00DC78' : '#7A9A88'} />
+                    {showBadge && (
+                      <span
+                        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center font-bold"
+                        style={{ background: '#ef4444', color: '#fff', fontSize: 9 }}
+                      >
+                        {alertCount > 9 ? '9+' : alertCount}
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ color: isActive ? '#00DC78' : '#7A9A88', fontSize: 10 }}>{label}</span>
+                </>
+              )}
             </button>
           );
         })}

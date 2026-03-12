@@ -1,216 +1,226 @@
 import { useMemo } from 'react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  BarChart, Bar, XAxis, YAxis, Tooltip,
   ReferenceLine, ResponsiveContainer, Cell,
 } from 'recharts';
-import { exportCSV, fmt$, fmtPct } from '../../utils/calculations';
-import { Download } from 'lucide-react';
+import useStore from '../../store';
+import {
+  getChainSummary, getActiveLeg, fmt$, fmtPct, exportCSV,
+} from '../../utils/calculations';
 
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-function groupByMonth(trades) {
-  const map = {};
-  trades.forEach((t) => {
-    const d = t.closeDate || t.openDate;
-    if (!d) return;
-    const dt = new Date(d);
-    const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
-    const label = `${MONTH_NAMES[dt.getMonth()]} '${String(dt.getFullYear()).slice(2)}`;
-    if (!map[key]) map[key] = { key, label, premium: 0, count: 0, wins: 0 };
-    map[key].premium += t.realizedPnl || 0;
-    map[key].count += 1;
-    if ((t.realizedPnl || 0) > 0) map[key].wins += 1;
-  });
-  return Object.values(map).sort((a, b) => a.key.localeCompare(b.key));
-}
-
-const CustomTooltip = ({ active, payload, label }) => {
+function ChartTooltip({ active, payload, label, target }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-lg p-3" style={{ background: '#0D1410', border: '1px solid rgba(255,255,255,0.1)', fontSize: 12 }}>
-      <p className="text-primary-text font-bold mb-1">{label}</p>
-      <p style={{ color: payload[0].value >= 0 ? '#00DC78' : '#FF4060' }}>
+    <div className="rounded-lg p-2 border border-white/12" style={{ background: '#0D1410', fontSize: 11 }}>
+      <p className="text-muted-text mb-1">{label}</p>
+      <p className="font-bold" style={{ color: payload[0].value >= 0 ? '#22c55e' : '#ef4444' }}>
         {fmt$(payload[0].value)}
       </p>
+      <p className="text-muted-text">Target: {fmt$(target)}</p>
     </div>
   );
-};
+}
 
-export default function Analytics({ closedTrades, settings }) {
-  const monthlyTarget = settings?.monthlyTarget || 3500;
+function StatCard({ label, value, sub, color }) {
+  return (
+    <div className="rounded-xl p-3.5 border border-white/07 bg-[#0D1410]">
+      <p className="text-muted-text text-xs uppercase tracking-wider mb-1">{label}</p>
+      <p className="font-bold text-xl" style={{ color: color || '#E0F0E8' }}>{value}</p>
+      {sub && <p className="text-muted-text text-xs mt-0.5">{sub}</p>}
+    </div>
+  );
+}
 
-  const monthlyData = useMemo(() => groupByMonth(closedTrades), [closedTrades]);
+export default function Analytics() {
+  const { chains, settings } = useStore();
 
-  const ytdData = useMemo(() => {
-    const year = new Date().getFullYear();
-    const ytd = closedTrades.filter((t) => {
-      const d = t.closeDate || t.openDate;
-      return d && new Date(d).getFullYear() === year;
+  const target = settings.monthlyTarget || 3750;
+  const closedChains = useMemo(() => chains.filter(c => c.status === 'closed'), [chains]);
+  const openChains = useMemo(() => chains.filter(c => c.status === 'open'), [chains]);
+
+  // Win rate
+  const wins = closedChains.filter(c => getChainSummary(c).netRealized > 0).length;
+  const winRate = closedChains.length > 0 ? (wins / closedChains.length) * 100 : 0;
+
+  // Total realized P&L
+  const totalRealized = useMemo(
+    () => closedChains.reduce((s, c) => s + getChainSummary(c).netRealized, 0),
+    [closedChains]
+  );
+
+  // Average ROC per closed trade
+  const avgRoc = useMemo(() => {
+    if (!closedChains.length) return 0;
+    const rocs = closedChains.map(c => {
+      const summary = getChainSummary(c);
+      // Find original open leg to get collateral
+      const openLeg = (c.legs || []).find(l => l.legType === 'open');
+      if (!openLeg) return 0;
+      const collateral = openLeg.strike * (openLeg.contracts || 1) * 100;
+      return collateral > 0 ? (summary.totalCollected / collateral) * 100 : 0;
     });
-    const total = ytd.reduce((s, t) => s + (t.realizedPnl || 0), 0);
-    const months = new Set(ytd.map((t) => {
-      const d = t.closeDate || t.openDate;
-      return d ? `${new Date(d).getFullYear()}-${new Date(d).getMonth()}` : null;
-    }).filter(Boolean)).size;
-    const best = ytd.reduce((max, t) => {
-      const key = t.closeDate ? `${new Date(t.closeDate).getFullYear()}-${new Date(t.closeDate).getMonth()}` : null;
-      return t.realizedPnl > (max.val || 0) ? { val: t.realizedPnl, key } : max;
-    }, {});
+    return rocs.reduce((s, r) => s + r, 0) / rocs.length;
+  }, [closedChains]);
 
-    // Group by month for best month calc
-    const byMonth = groupByMonth(ytd);
-    const bestMonth = byMonth.reduce((b, m) => m.premium > b.premium ? m : b, { premium: 0, label: '—' });
+  // Roll frequency
+  const rolledChains = chains.filter(c => (c.legs || []).some(l => l.legType === 'roll_open'));
+  const rollRate = chains.length > 0 ? (rolledChains.length / chains.length) * 100 : 0;
 
-    const wins = ytd.filter((t) => (t.realizedPnl || 0) > 0).length;
-    const winRate = ytd.length > 0 ? (wins / ytd.length) * 100 : 0;
+  // Monthly chart data (last 12 months)
+  const monthlyData = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 12 }, (_, i) => {
+      const date = new Date(now.getFullYear(), now.getMonth() - (11 - i), 1);
+      const y = date.getFullYear();
+      const m = date.getMonth();
+      const realized = closedChains
+        .filter(c => {
+          if (!c.closeDate) return false;
+          const d = new Date(c.closeDate);
+          return d.getFullYear() === y && d.getMonth() === m;
+        })
+        .reduce((s, c) => s + getChainSummary(c).netRealized, 0);
+      return { name: MONTHS[m], value: realized, target };
+    });
+  }, [closedChains, target]);
 
-    return {
-      total,
-      avgPerMonth: months > 0 ? total / months : 0,
-      bestMonth: bestMonth.premium,
-      bestMonthLabel: bestMonth.label,
-      trades: ytd.length,
-      winRate,
-    };
-  }, [closedTrades]);
+  // Trade history table
+  const tradeHistory = useMemo(() =>
+    [...closedChains]
+      .sort((a, b) => (b.closeDate || '').localeCompare(a.closeDate || ''))
+      .slice(0, 20),
+    [closedChains]
+  );
 
-  const allTimeTotal = closedTrades.reduce((s, t) => s + (t.realizedPnl || 0), 0);
+  // Open positions summary
+  const totalUnrealized = useMemo(() => openChains.reduce((s, c) => {
+    const active = getActiveLeg(c);
+    if (!active) return s;
+    const unreal = (active.premiumCollected - (active.currentPremium ?? active.premiumCollected))
+      * (active.contracts || 1) * 100;
+    return s + unreal;
+  }, 0), [openChains]);
 
   return (
-    <div className="animate-fade-up px-4 pt-4 pb-6 flex flex-col gap-4">
-      {/* Monthly P&L Chart */}
-      <div className="rounded-lg p-4 card-border" style={{ background: '#0D1410' }}>
-        <div className="flex justify-between items-center mb-3">
-          <span className="text-xs uppercase tracking-widest text-muted-text">Monthly P&L</span>
-          <span className="text-xs text-muted-text">Target: {fmt$(monthlyTarget, 0)}</span>
-        </div>
-        {monthlyData.length === 0 ? (
-          <div className="flex items-center justify-center py-8 text-muted-text text-xs">
-            No closed trades yet
-          </div>
-        ) : (
-          <div style={{ width: '100%', height: 180 }}>
-            <ResponsiveContainer>
-              <BarChart data={monthlyData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="label" tick={{ fill: '#7A9A88', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#7A9A88', fontSize: 10 }} axisLine={false} tickLine={false}
-                  tickFormatter={(v) => `$${Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + 'k' : v}`} />
-                <Tooltip content={<CustomTooltip />} />
-                <ReferenceLine y={monthlyTarget} stroke="#00DC78" strokeDasharray="4 4" strokeWidth={1.5} />
-                <Bar dataKey="premium" radius={[3, 3, 0, 0]}>
-                  {monthlyData.map((entry, i) => (
-                    <Cell key={i} fill={entry.premium >= monthlyTarget ? '#00DC78' : entry.premium >= 0 ? '#5599FF' : '#FF4060'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+    <div className="animate-fade-up px-4 pt-4 pb-6 flex flex-col gap-5">
+      <div>
+        <h1 className="text-primary-text font-bold text-base">Analytics</h1>
+        <p className="text-muted-text text-xs mt-0.5">{chains.length} total chains · {closedChains.length} closed</p>
       </div>
 
-      {/* YTD Stats */}
-      <div className="rounded-lg card-border overflow-hidden" style={{ background: '#0D1410' }}>
-        <div className="px-3 py-2 border-b" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
-          <span className="text-xs uppercase tracking-widest text-muted-text">YTD Summary</span>
-        </div>
-        <div className="grid grid-cols-2 divide-x divide-y" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-          {[
-            { label: 'Total Premium', value: fmt$(ytdData.total), color: ytdData.total >= 0 ? '#00DC78' : '#FF4060' },
-            { label: 'Avg / Month', value: fmt$(ytdData.avgPerMonth), color: '#5599FF' },
-            { label: 'Best Month', value: ytdData.bestMonth > 0 ? fmt$(ytdData.bestMonth) : '—', color: '#00DC78' },
-            { label: 'Total Trades', value: ytdData.trades, color: '#E0F0E8' },
-            { label: 'Win Rate', value: fmtPct(ytdData.winRate), color: ytdData.winRate >= 70 ? '#00DC78' : '#FFB800' },
-            { label: 'All-Time Total', value: fmt$(allTimeTotal), color: allTimeTotal >= 0 ? '#00DC78' : '#FF4060' },
-          ].map((item) => (
-            <div key={item.label} className="px-3 py-3">
-              <div className="text-muted-text text-xs">{item.label}</div>
-              <div className="font-bold text-sm" style={{ color: item.color }}>{item.value}</div>
-            </div>
-          ))}
-        </div>
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 gap-3">
+        <StatCard
+          label="Win Rate"
+          value={winRate > 0 ? fmtPct(winRate, 0) : '—'}
+          sub={`${wins}/${closedChains.length} closed profitably`}
+          color={winRate >= 70 ? '#22c55e' : winRate >= 50 ? '#f59e0b' : '#ef4444'}
+        />
+        <StatCard
+          label="Total Realized"
+          value={totalRealized !== 0 ? fmt$(totalRealized, 0) : '—'}
+          sub="net closed P&L"
+          color={totalRealized >= 0 ? '#22c55e' : '#ef4444'}
+        />
+        <StatCard
+          label="Avg ROC"
+          value={avgRoc > 0 ? fmtPct(avgRoc, 1) : '—'}
+          sub="per trade, on collateral"
+          color="#5599FF"
+        />
+        <StatCard
+          label="Roll Rate"
+          value={rollRate > 0 ? fmtPct(rollRate, 0) : '—'}
+          sub={`${rolledChains.length} positions rolled`}
+          color="#f59e0b"
+        />
       </div>
 
-      {/* All-Time Running Total */}
-      <div className="rounded-lg p-3 card-border flex items-center justify-between" style={{ background: '#0D1410' }}>
-        <span className="text-muted-text text-xs uppercase tracking-widest">All-Time Premium</span>
-        <span
-          className="font-bold text-base"
-          style={{ color: allTimeTotal >= 0 ? '#00DC78' : '#FF4060' }}
-        >
-          {fmt$(allTimeTotal)}
-        </span>
-      </div>
-
-      {/* Export */}
-      <button
-        onClick={() => exportCSV(closedTrades)}
-        className="w-full flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-sm border"
-        style={{ borderColor: 'rgba(255,255,255,0.12)', color: '#E0F0E8', minHeight: 44 }}
-      >
-        <Download size={15} />
-        Export CSV
-      </button>
-
-      {/* Closed Trades Table */}
-      <div className="rounded-lg card-border overflow-hidden" style={{ background: '#0D1410' }}>
-        <div className="px-3 py-2 border-b flex justify-between items-center" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
-          <span className="text-xs uppercase tracking-widest text-muted-text">Trade History</span>
-          <span className="text-xs text-muted-text">{closedTrades.length} trades</span>
-        </div>
-        {closedTrades.length === 0 ? (
-          <div className="px-3 py-8 text-center text-muted-text text-xs">
-            No closed trades yet
+      {/* Open unrealized */}
+      {openChains.length > 0 && (
+        <div className="rounded-xl p-3.5 border border-white/07 bg-[#0D1410] flex items-center justify-between">
+          <div>
+            <p className="text-muted-text text-xs uppercase tracking-wider">Open Unrealized</p>
+            <p className="font-bold text-base mt-0.5" style={{ color: totalUnrealized >= 0 ? '#22c55e' : '#ef4444' }}>
+              {totalUnrealized >= 0 ? '+' : ''}{fmt$(totalUnrealized)}
+            </p>
           </div>
-        ) : (
-          <div className="overflow-x-auto no-scrollbar">
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-                  {['Date', 'Ticker', 'Type', 'Strike', 'Open', 'Close', 'P&L', 'Days', 'Reason'].map((h) => (
-                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: '#7A9A88', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {closedTrades.map((t, i) => (
-                  <tr
-                    key={t.id || i}
-                    style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}
-                  >
-                    <td style={{ padding: '8px 10px', color: '#7A9A88', whiteSpace: 'nowrap' }}>
-                      {t.closeDate || '—'}
-                    </td>
-                    <td style={{ padding: '8px 10px', fontWeight: 700, color: '#E0F0E8' }}>{t.ticker}</td>
-                    <td style={{ padding: '8px 10px' }}>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
-                        background: t.type === 'CSP' ? 'rgba(0,200,255,0.15)' : 'rgba(170,136,255,0.15)',
-                        color: t.type === 'CSP' ? '#00C8FF' : '#AA88FF',
-                      }}>
-                        {t.type}
-                      </span>
-                    </td>
-                    <td style={{ padding: '8px 10px', color: '#E0F0E8' }}>${t.strike}</td>
-                    <td style={{ padding: '8px 10px', color: '#7A9A88' }}>${t.premium?.toFixed(2)}</td>
-                    <td style={{ padding: '8px 10px', color: '#7A9A88' }}>${(t.closePremium || 0)?.toFixed(2)}</td>
-                    <td style={{ padding: '8px 10px', fontWeight: 700, color: (t.realizedPnl || 0) >= 0 ? '#00DC78' : '#FF4060' }}>
-                      {fmt$(t.realizedPnl || 0)}
-                    </td>
-                    <td style={{ padding: '8px 10px', color: '#7A9A88' }}>{t.daysHeld || 0}d</td>
-                    <td style={{ padding: '8px 10px', color: '#7A9A88', whiteSpace: 'nowrap' }}>
-                      {(t.closeReason || '—').replace('Profit Target 65%', 'PT65')}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+          <p className="text-muted-text text-xs text-right">{openChains.length} open positions<br/>if all closed now</p>
+        </div>
+      )}
+
+      {/* Monthly bar chart */}
+      <div className="rounded-xl border border-white/07 bg-[#0D1410] p-4">
+        <p className="text-muted-text text-xs uppercase tracking-widest mb-4">Monthly Premium (Last 12 Months)</p>
+        <ResponsiveContainer width="100%" height={160}>
+          <BarChart data={monthlyData} margin={{ top: 0, right: 4, bottom: 0, left: -20 }}>
+            <XAxis dataKey="name" tick={{ fill: '#7A9A88', fontSize: 10 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: '#7A9A88', fontSize: 10 }} axisLine={false} tickLine={false} />
+            <Tooltip content={<ChartTooltip target={target} />} />
+            <ReferenceLine y={target} stroke="rgba(255,255,255,0.2)" strokeDasharray="3 3" />
+            <Bar dataKey="value" radius={[3, 3, 0, 0]} maxBarSize={24}>
+              {monthlyData.map((entry, i) => (
+                <Cell
+                  key={i}
+                  fill={entry.value >= target ? '#22c55e' : entry.value > 0 ? '#5599FF' : '#ef4444'}
+                  opacity={0.85}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+        <p className="text-muted-text text-xs text-right mt-1">Target: {fmt$(target, 0)}/mo</p>
       </div>
+
+      {/* Trade history */}
+      {tradeHistory.length > 0 && (
+        <div className="rounded-xl border border-white/07 bg-[#0D1410] overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/07">
+            <span className="text-muted-text text-xs uppercase tracking-widest">Trade History</span>
+            <button
+              onClick={() => exportCSV(chains)}
+              className="text-xs text-info-blue font-bold px-2 py-1"
+              style={{ minHeight: 36 }}
+            >
+              Export CSV
+            </button>
+          </div>
+          <div className="divide-y divide-white/05">
+            {tradeHistory.map(c => {
+              const { netRealized, totalCollected } = getChainSummary(c);
+              const openLeg = (c.legs || []).find(l => l.legType === 'open');
+              const collateral = openLeg ? openLeg.strike * (openLeg.contracts || 1) * 100 : 0;
+              const roc = collateral > 0 ? (totalCollected / collateral) * 100 : 0;
+              return (
+                <div key={c.id} className="flex items-center px-3 py-2.5 gap-3 text-xs">
+                  <div className="text-muted-text shrink-0 w-16">{c.closeDate}</div>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-primary-text font-bold">{c.ticker}</span>
+                    <span className="text-muted-text ml-1">{c.type}</span>
+                    {(c.legs || []).some(l => l.legType === 'roll_open') && (
+                      <span className="text-info-blue ml-1">rolled</span>
+                    )}
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-bold" style={{ color: netRealized >= 0 ? '#22c55e' : '#ef4444' }}>
+                      {netRealized >= 0 ? '+' : ''}{fmt$(netRealized)}
+                    </div>
+                    {roc > 0 && <div className="text-muted-text">{roc.toFixed(1)}% ROC</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {closedChains.length === 0 && (
+        <div className="text-center py-8 text-muted-text text-xs">
+          Close your first trade to see analytics.
+        </div>
+      )}
     </div>
   );
 }

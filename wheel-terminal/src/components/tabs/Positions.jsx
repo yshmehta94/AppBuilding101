@@ -1,10 +1,28 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Plus, X, ChevronDown, AlertTriangle } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { ChevronDown, ChevronUp, RotateCcw, X, Edit3, TrendingDown, TrendingUp } from 'lucide-react';
+import useStore from '../../store';
 import {
-  capturePct, pnlFor, daysTo, getStatus, getAdvice, fmt$, fmtPct,
+  getActiveLeg, getChainSummary, getCapturePct,
+  getStatus, getTrueCostBasis, daysTo, fmt$, STATUS,
 } from '../../utils/calculations';
 
-// ─── Shared Badges ─────────────────────────────────────────────────────────
+// ─── Status badge ─────────────────────────────────────────────────────────────
+
+function StatusBadge({ status }) {
+  const map = {
+    [STATUS.CLOSE]:  { label: 'CLOSE', bg: '#22c55e', color: '#070C09' },
+    [STATUS.GREEN]:  { label: 'HOLD',  bg: 'rgba(34,197,94,0.15)', color: '#22c55e' },
+    [STATUS.YELLOW]: { label: 'HOLD',  bg: 'rgba(245,158,11,0.15)', color: '#f59e0b' },
+    [STATUS.WATCH]:  { label: 'WATCH', bg: 'rgba(239,68,68,0.15)', color: '#ef4444' },
+    [STATUS.ACT]:    { label: 'ACT',   bg: '#ef4444', color: '#fff' },
+  };
+  const s = map[status] || map[STATUS.YELLOW];
+  return (
+    <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: s.bg, color: s.color, fontSize: 10 }}>
+      {s.label}
+    </span>
+  );
+}
 
 function TypeBadge({ type }) {
   return (
@@ -21,760 +39,362 @@ function TypeBadge({ type }) {
   );
 }
 
-function StatusBadge({ status }) {
-  const map = {
-    CLOSE_NOW: { label: 'CLOSE', bg: '#00DC78', color: '#070C09' },
-    DANGER: { label: 'DANGER', bg: '#FF4060', color: '#fff' },
-    ROLL_NOW: { label: 'ROLL', bg: '#FFB800', color: '#070C09' },
-    CHECK_21: { label: 'CHECK', bg: '#5599FF', color: '#fff' },
-    WATCH: { label: 'WATCH', bg: 'rgba(255,184,0,0.18)', color: '#FFB800', border: '#FFB800' },
-    HOLD: { label: 'HOLD', bg: 'rgba(122,154,136,0.15)', color: '#7A9A88' },
-  };
-  const s = map[status] || map.HOLD;
-  const isDanger = status === 'DANGER';
+function ConvictionBadge({ level }) {
+  const map = { high: '#22c55e', medium: '#f59e0b', low: '#ef4444' };
   return (
-    <span
-      className={`text-xs font-bold px-2 py-0.5 rounded ${isDanger ? 'animate-pulse-danger' : ''}`}
-      style={{ background: s.bg, color: s.color, border: s.border ? `1px solid ${s.border}` : undefined, fontSize: 10 }}
-    >
-      {s.label}
+    <span className="text-xs" style={{ color: map[level] || '#7A9A88' }}>
+      {level === 'high' ? '🟢' : level === 'medium' ? '🟡' : '🔴'} {level}
     </span>
   );
 }
 
-// ─── Close Modal ───────────────────────────────────────────────────────────
+// ─── Edit current premium modal ───────────────────────────────────────────────
 
-function CloseModal({ pos, onClose, onConfirm }) {
-  const [closeDate, setCloseDate] = useState(new Date().toISOString().split('T')[0]);
-  const [closePremium, setClosePremium] = useState(pos.currentPremium ?? '');
-  const [closeReason, setCloseReason] = useState('Profit Target 65%');
-
-  const realizedPnl = pos.premium > 0
-    ? (pos.premium - parseFloat(closePremium || 0)) * (pos.contracts || 1) * 100
-    : 0;
-
+function UpdatePremiumModal({ chain, activeLeg, onClose, onSave }) {
+  const [val, setVal] = useState(activeLeg?.currentPremium ?? activeLeg?.premiumCollected ?? '');
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end justify-center"
-      style={{ background: 'rgba(0,0,0,0.75)' }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div
-        className="w-full rounded-t-2xl p-5 pb-8 animate-fade-up"
-        style={{ background: '#0D1410', maxWidth: 480, border: '1px solid rgba(255,255,255,0.1)' }}
-      >
-        <div className="flex justify-between items-center mb-4">
-          <span className="font-bold text-sm text-primary-green">Close {pos.ticker} {pos.type}</span>
-          <button onClick={onClose} className="text-muted-text" style={{ minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: 'rgba(0,0,0,0.7)' }}>
+      <div className="w-full rounded-t-2xl p-5 flex flex-col gap-4" style={{ background: '#0D1410', maxHeight: '60vh' }}>
+        <div className="flex items-center justify-between">
+          <span className="text-primary-text font-bold text-sm">Update Current Premium</span>
+          <button onClick={onClose} style={{ minWidth: 44, minHeight: 44 }} className="flex items-center justify-center text-muted-text">
             <X size={18} />
           </button>
         </div>
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-text text-xs">Close Date</span>
-            <input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)}
-              className="px-3 py-2.5 w-full" style={{ minHeight: 44 }} />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-text text-xs">Close Price (per share)</span>
-            <input type="number" step="0.01" placeholder="0.00" value={closePremium}
-              onChange={(e) => setClosePremium(e.target.value)}
-              className="px-3 py-2.5 w-full" style={{ minHeight: 44 }} />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-text text-xs">Close Reason</span>
-            <select value={closeReason} onChange={(e) => setCloseReason(e.target.value)}
-              className="px-3 py-2.5 w-full appearance-none" style={{ minHeight: 44 }}>
-              {['Profit Target 65%', 'Expired Worthless', 'Rolled', 'Assigned', 'Called Away', 'Manual Close'].map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-          </label>
-          <div className="rounded-lg p-3" style={{ background: 'rgba(255,255,255,0.05)' }}>
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-text">Realized P&L</span>
-              <span className="font-bold" style={{ color: realizedPnl >= 0 ? '#00DC78' : '#FF4060' }}>
-                {fmt$(realizedPnl)}
-              </span>
-            </div>
-          </div>
-          <button
-            onClick={() => onConfirm({ closeDate, closePremium: parseFloat(closePremium) || 0, closeReason })}
-            className="w-full py-3 rounded-lg font-bold text-sm"
-            style={{ background: '#00DC78', color: '#070C09', minHeight: 44 }}
-          >
-            Confirm Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Position Card ─────────────────────────────────────────────────────────
-
-function PositionCard({ pos, stockPrices, updatePosition, closePosition, markRolled, removePosition, isFocused }) {
-  const [showClose, setShowClose] = useState(false);
-  const [cpInput, setCpInput] = useState(pos.currentPremium ?? pos.premium);
-  const cardRef = useRef(null);
-
-  useEffect(() => {
-    if (isFocused && cardRef.current) {
-      setTimeout(() => cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
-    }
-  }, [isFocused]);
-
-  useEffect(() => {
-    setCpInput(pos.currentPremium ?? pos.premium);
-  }, [pos.currentPremium, pos.premium]);
-
-  const sp = stockPrices[pos.ticker];
-  const stockPrice = sp?.price;
-  const cap = capturePct(pos);
-  const pnl = pnlFor(pos);
-  const dte = daysTo(pos.expiry);
-  const status = getStatus(pos, stockPrice);
-  const advice = getAdvice(pos, stockPrice);
-
-  const handleCpBlur = () => {
-    const val = parseFloat(cpInput);
-    if (!isNaN(val) && val !== pos.currentPremium) {
-      updatePosition(pos.id, { currentPremium: val });
-    }
-  };
-
-  const handleConfirmClose = (closeData) => {
-    closePosition(pos, closeData);
-    setShowClose(false);
-  };
-
-  const rollWarning = pos.rollCount >= 3;
-  const rollAlmost = pos.rollCount >= 2 && !rollWarning;
-
-  return (
-    <>
-      {showClose && (
-        <CloseModal pos={pos} onClose={() => setShowClose(false)} onConfirm={handleConfirmClose} />
-      )}
-      <div
-        ref={cardRef}
-        className="rounded-lg card-border overflow-hidden animate-fade-up"
-        style={{
-          background: '#0D1410',
-          borderLeft: `3px solid ${advice.color}`,
-          scrollMarginTop: 16,
-        }}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-3 pt-3 pb-2">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-bold text-base text-primary-text">{pos.ticker}</span>
-            <TypeBadge type={pos.type} />
-            <StatusBadge status={status} />
-          </div>
-          <div className="flex flex-col items-end">
-            {stockPrice ? (
-              <>
-                <span className="font-bold text-sm text-primary-text">${stockPrice.toFixed(2)}</span>
-                <span
-                  className="text-xs"
-                  style={{ color: (sp?.change || 0) >= 0 ? '#00DC78' : '#FF4060' }}
-                >
-                  {(sp?.change || 0) >= 0 ? '+' : ''}{sp?.change?.toFixed(2)} ({sp?.changePct?.toFixed(2)}%)
-                </span>
-              </>
-            ) : (
-              <span className="text-muted-text text-xs">no price</span>
-            )}
-          </div>
-        </div>
-
-        {/* Metrics Grid */}
-        <div className="grid grid-cols-3 gap-0 px-3 pb-2">
-          <div>
-            <div className="text-muted-text text-xs">Premium</div>
-            <div className="text-sm font-bold text-primary-text">${pos.premium?.toFixed(2)}</div>
-          </div>
-          <div>
-            <div className="text-muted-text text-xs">P&L</div>
-            <div className="text-sm font-bold" style={{ color: pnl >= 0 ? '#00DC78' : '#FF4060' }}>
-              {fmt$(pnl)}
-            </div>
-          </div>
-          <div>
-            <div className="text-muted-text text-xs">Collateral</div>
-            <div className="text-sm font-bold text-info-blue">{fmt$(pos.collateral, 0)}</div>
-          </div>
-          <div className="mt-2">
-            <div className="text-muted-text text-xs">Strike</div>
-            <div className="text-sm font-bold text-primary-text">${pos.strike}</div>
-          </div>
-          <div className="mt-2">
-            <div className="text-muted-text text-xs">DTE</div>
-            <div className="text-sm font-bold" style={{ color: dte <= 7 ? '#FF4060' : dte <= 21 ? '#FFB800' : '#E0F0E8' }}>
-              {dte}d
-            </div>
-          </div>
-          <div className="mt-2">
-            <div className="text-muted-text text-xs flex items-center gap-1">
-              Rolls
-              {rollAlmost && <AlertTriangle size={10} color="#FFB800" />}
-              {rollWarning && <AlertTriangle size={10} color="#FF4060" />}
-            </div>
-            <div
-              className="text-sm font-bold"
-              style={{ color: rollWarning ? '#FF4060' : rollAlmost ? '#FFB800' : '#E0F0E8' }}
-            >
-              {pos.rollCount || 0}/3
-            </div>
-          </div>
-        </div>
-
-        {/* Capture Section */}
-        <div className="px-3 pb-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-muted-text text-xs">Capture</span>
-            <span
-              className="text-xl font-bold"
-              style={{ color: cap >= 65 ? '#00DC78' : cap >= 40 ? '#FFB800' : '#E0F0E8' }}
-            >
-              {cap.toFixed(1)}%
-            </span>
-          </div>
-          <div className="h-2 rounded-full overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.07)' }}>
-            <div
-              className="progress-bar-fill h-full rounded-full"
-              style={{ width: `${cap}%`, background: cap >= 65 ? '#00DC78' : '#FFB800' }}
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-text text-xs shrink-0">Current $</span>
-            <input
-              type="number"
-              step="0.01"
-              value={cpInput}
-              onChange={(e) => setCpInput(e.target.value)}
-              onBlur={handleCpBlur}
-              className="flex-1 px-2 py-1 text-sm font-bold text-right"
-              style={{ minHeight: 36, maxWidth: 100 }}
-            />
-            <span className="text-muted-text text-xs shrink-0">/ ${pos.premium?.toFixed(2)}</span>
-          </div>
-        </div>
-
-        {/* Advice Strip */}
-        <div
-          className="px-3 py-2 text-xs leading-relaxed"
-          style={{ background: 'rgba(255,255,255,0.03)', borderTop: '1px solid rgba(255,255,255,0.05)', borderLeft: `3px solid ${advice.color}` }}
-        >
-          <span className="mr-1">{advice.emoji}</span>
-          <span className="font-bold mr-1" style={{ color: advice.color }}>{advice.action}</span>
-          <span className="text-muted-text">{advice.message}</span>
-        </div>
-
-        {/* Roll Warning */}
-        {rollWarning && (
-          <div className="px-3 py-2 text-xs font-bold" style={{ background: 'rgba(255,64,96,0.1)', color: '#FF4060' }}>
-            ⛔ MAX ROLLS REACHED — Thesis is broken. Accept assignment or close.
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        <div
-          className="flex gap-2 px-3 py-3"
-          style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}
-        >
-          {cap >= 65 && (
-            <button
-              onClick={() => setShowClose(true)}
-              className="flex-1 py-2.5 rounded-lg text-xs font-bold"
-              style={{ background: '#00DC78', color: '#070C09', minHeight: 44 }}
-            >
-              ✅ CLOSE
-            </button>
-          )}
-          <button
-            onClick={() => {
-              if (rollWarning) return;
-              markRolled(pos.id);
-            }}
-            disabled={rollWarning}
-            className="flex-1 py-2.5 rounded-lg text-xs font-bold border"
-            style={{
-              borderColor: rollWarning ? '#FF4060' : 'rgba(255,255,255,0.12)',
-              color: rollWarning ? '#FF4060' : '#E0F0E8',
-              minHeight: 44,
-              opacity: rollWarning ? 0.6 : 1,
-            }}
-          >
-            🔄 ROLLED
-          </button>
-          {cap < 65 && (
-            <button
-              onClick={() => setShowClose(true)}
-              className="flex-1 py-2.5 rounded-lg text-xs font-bold border"
-              style={{ borderColor: 'rgba(255,255,255,0.12)', color: '#7A9A88', minHeight: 44 }}
-            >
-              Close
-            </button>
-          )}
-          <button
-            onClick={() => {
-              if (window.confirm(`Remove ${pos.ticker} from open positions?`)) {
-                removePosition(pos.id);
-              }
-            }}
-            className="py-2.5 px-3 rounded-lg text-xs font-bold border"
-            style={{ borderColor: 'rgba(255,64,96,0.3)', color: '#FF4060', minHeight: 44 }}
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─── Manual Entry Form ─────────────────────────────────────────────────────
-
-const EMPTY_FORM = {
-  ticker: '', type: 'CSP', strike: '', expiry: '', premium: '',
-  currentPremium: '', contracts: 1, delta: '', collateral: '',
-  costBasis: '', rollCount: 0, notes: '',
-};
-
-function ManualForm({ onAdd, onCancel }) {
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [errors, setErrors] = useState({});
-
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-
-  const validate = () => {
-    const e = {};
-    if (!form.ticker.trim()) e.ticker = 'Required';
-    if (!form.strike || isNaN(form.strike)) e.strike = 'Required';
-    if (!form.expiry) e.expiry = 'Required';
-    if (!form.premium || isNaN(form.premium)) e.premium = 'Required';
-    setErrors(e);
-    return Object.keys(e).length === 0;
-  };
-
-  const handleSubmit = () => {
-    if (!validate()) return;
-    const contracts = parseInt(form.contracts) || 1;
-    const strike = parseFloat(form.strike);
-    const collateral = parseFloat(form.collateral) || strike * 100 * contracts;
-    onAdd({
-      ...form,
-      ticker: form.ticker.toUpperCase(),
-      strike,
-      premium: parseFloat(form.premium),
-      currentPremium: parseFloat(form.currentPremium || form.premium),
-      contracts,
-      delta: parseFloat(form.delta) || 0,
-      collateral,
-      costBasis: parseFloat(form.costBasis) || 0,
-      rollCount: parseInt(form.rollCount) || 0,
-    });
-  };
-
-  const fieldClass = "px-3 py-2.5 w-full rounded";
-  const labelClass = "text-muted-text text-xs mb-1";
-
-  return (
-    <div className="rounded-lg p-4 card-border animate-fade-up" style={{ background: '#0D1410' }}>
-      <div className="flex justify-between items-center mb-4">
-        <span className="font-bold text-sm text-primary-green">New Position</span>
-        <button onClick={onCancel} style={{ minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <X size={16} color="#7A9A88" />
-        </button>
-      </div>
-      <div className="flex flex-col gap-3">
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Ticker *</span>
-            <input value={form.ticker} onChange={(e) => set('ticker', e.target.value.toUpperCase())}
-              placeholder="AAPL" className={fieldClass} style={{ minHeight: 44 }} />
-            {errors.ticker && <span className="text-danger-red text-xs mt-0.5">{errors.ticker}</span>}
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Type</span>
-            <select value={form.type} onChange={(e) => set('type', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }}>
-              <option value="CSP">CSP</option>
-              <option value="CC">CC</option>
-            </select>
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Strike *</span>
-            <input type="number" step="0.5" value={form.strike} onChange={(e) => set('strike', e.target.value)}
-              placeholder="50.00" className={fieldClass} style={{ minHeight: 44 }} />
-            {errors.strike && <span className="text-danger-red text-xs mt-0.5">{errors.strike}</span>}
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Expiry *</span>
-            <input type="date" value={form.expiry} onChange={(e) => set('expiry', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-            {errors.expiry && <span className="text-danger-red text-xs mt-0.5">{errors.expiry}</span>}
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Premium (credit) *</span>
-            <input type="number" step="0.01" value={form.premium} onChange={(e) => set('premium', e.target.value)}
-              placeholder="1.50" className={fieldClass} style={{ minHeight: 44 }} />
-            {errors.premium && <span className="text-danger-red text-xs mt-0.5">{errors.premium}</span>}
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Current Premium</span>
-            <input type="number" step="0.01" value={form.currentPremium} onChange={(e) => set('currentPremium', e.target.value)}
-              placeholder="Same as premium" className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Contracts</span>
-            <input type="number" min="1" value={form.contracts} onChange={(e) => set('contracts', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Delta</span>
-            <input type="number" step="0.01" value={form.delta} onChange={(e) => set('delta', e.target.value)}
-              placeholder="0.30" className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Collateral (auto)</span>
-            <input type="number" value={form.collateral} onChange={(e) => set('collateral', e.target.value)}
-              placeholder="Auto-calc" className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-          {form.type === 'CC' && (
-            <label className="flex flex-col">
-              <span className={labelClass}>Cost Basis</span>
-              <input type="number" step="0.01" value={form.costBasis} onChange={(e) => set('costBasis', e.target.value)}
-                placeholder="41.00" className={fieldClass} style={{ minHeight: 44 }} />
-            </label>
-          )}
-        </div>
-        <label className="flex flex-col">
-          <span className={labelClass}>Notes</span>
-          <textarea value={form.notes} onChange={(e) => set('notes', e.target.value)}
-            placeholder="Optional notes…" rows={2}
-            className="px-3 py-2 w-full rounded resize-none text-sm" />
-        </label>
-        <button
-          onClick={handleSubmit}
-          className="w-full py-3 rounded-lg font-bold text-sm"
-          style={{ background: '#00DC78', color: '#070C09', minHeight: 44 }}
-        >
-          Add Position
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── Screenshot Review ─────────────────────────────────────────────────────
-
-function ScreenshotReview({ parsed, onConfirm, onCancel }) {
-  const [form, setForm] = useState({
-    ticker: parsed.ticker || '',
-    type: parsed.type || 'CSP',
-    strike: parsed.strike || '',
-    expiry: parsed.expiry || '',
-    premium: parsed.premium || '',
-    currentPremium: parsed.premium || '',
-    contracts: parsed.contracts || 1,
-    delta: parsed.delta || '',
-    collateral: parsed.collateral || '',
-    costBasis: parsed.costBasis || '',
-    notes: parsed.notes || '',
-    rollCount: 0,
-  });
-
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-
-  const handleConfirm = () => {
-    const contracts = parseInt(form.contracts) || 1;
-    const strike = parseFloat(form.strike) || 0;
-    onConfirm({
-      ...form,
-      ticker: (form.ticker || '').toUpperCase(),
-      strike,
-      premium: parseFloat(form.premium) || 0,
-      currentPremium: parseFloat(form.currentPremium || form.premium) || 0,
-      contracts,
-      delta: parseFloat(form.delta) || 0,
-      collateral: parseFloat(form.collateral) || strike * 100 * contracts,
-      costBasis: parseFloat(form.costBasis) || 0,
-    });
-  };
-
-  const fieldClass = "px-3 py-2.5 w-full rounded";
-  const labelClass = "text-muted-text text-xs mb-1";
-
-  return (
-    <div className="rounded-lg p-4 card-border animate-fade-up" style={{ background: '#0D1410' }}>
-      <div className="flex justify-between items-center mb-4">
-        <span className="font-bold text-sm text-info-blue">Review Parsed Trade</span>
-        <button onClick={onCancel} style={{ minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <X size={16} color="#7A9A88" />
-        </button>
-      </div>
-      <p className="text-muted-text text-xs mb-4">Review and edit before confirming.</p>
-      <div className="flex flex-col gap-3">
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Ticker</span>
-            <input value={form.ticker} onChange={(e) => set('ticker', e.target.value.toUpperCase())}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Type</span>
-            <select value={form.type} onChange={(e) => set('type', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }}>
-              <option value="CSP">CSP</option>
-              <option value="CC">CC</option>
-            </select>
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Strike</span>
-            <input type="number" step="0.5" value={form.strike} onChange={(e) => set('strike', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Expiry</span>
-            <input type="date" value={form.expiry} onChange={(e) => set('expiry', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Premium</span>
-            <input type="number" step="0.01" value={form.premium} onChange={(e) => set('premium', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Contracts</span>
-            <input type="number" min="1" value={form.contracts} onChange={(e) => set('contracts', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col">
-            <span className={labelClass}>Delta</span>
-            <input type="number" step="0.01" value={form.delta} onChange={(e) => set('delta', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-          <label className="flex flex-col">
-            <span className={labelClass}>Collateral</span>
-            <input type="number" value={form.collateral} onChange={(e) => set('collateral', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-        </div>
-        {form.type === 'CC' && (
-          <label className="flex flex-col">
-            <span className={labelClass}>Cost Basis</span>
-            <input type="number" step="0.01" value={form.costBasis} onChange={(e) => set('costBasis', e.target.value)}
-              className={fieldClass} style={{ minHeight: 44 }} />
-          </label>
-        )}
-        <div className="flex gap-2">
-          <button onClick={onCancel} className="flex-1 py-3 rounded-lg text-sm border"
-            style={{ borderColor: 'rgba(255,255,255,0.12)', color: '#7A9A88', minHeight: 44 }}>
-            Cancel
-          </button>
-          <button onClick={handleConfirm}
-            className="flex-1 py-3 rounded-lg font-bold text-sm"
-            style={{ background: '#00DC78', color: '#070C09', minHeight: 44 }}>
-            Add Position
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Main Positions Tab ─────────────────────────────────────────────────────
-
-export default function Positions({
-  positions, sortedPositions, settings, stockPrices,
-  addPosition, updatePosition, removePosition, closePosition, markRolled,
-  focusTicker, setFocusTicker, showBanner,
-}) {
-  const [mode, setMode] = useState('list'); // list | manual | screenshot | review
-  const [screenshotParsed, setScreenshotParsed] = useState(null);
-  const [screenshotLoading, setScreenshotLoading] = useState(false);
-  const fileInputRef = useRef(null);
-
-  // Clear focus after a bit
-  useEffect(() => {
-    if (focusTicker) {
-      const t = setTimeout(() => setFocusTicker(null), 2000);
-      return () => clearTimeout(t);
-    }
-  }, [focusTicker, setFocusTicker]);
-
-  const handleImageUpload = useCallback(async (file) => {
-    if (!file) return;
-    setScreenshotLoading(true);
-    setMode('screenshot');
-    try {
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result;
-          resolve(result.split(',')[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-
-      const mediaType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          'x-api-key': '',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: { type: 'base64', media_type: mediaType, data: base64 },
-              },
-              {
-                type: 'text',
-                text: 'Analyze this broker screenshot of an options trade. Return ONLY valid JSON with no markdown and no explanation in this exact format: {"ticker": string, "type": "CSP" or "CC", "strike": number, "expiry": "YYYY-MM-DD", "premium": number, "contracts": number, "delta": number, "collateral": number, "costBasis": number, "notes": string}. Use 0 for unknown numbers and empty string for unknown text. Return ONLY the JSON.',
-              },
-            ],
-          }],
-        }),
-      });
-      clearTimeout(timeout);
-
-      if (!res.ok) throw new Error(`API error ${res.status}`);
-      const data = await res.json();
-      const text = data.content?.[0]?.text || '{}';
-      const parsed = JSON.parse(text);
-      setScreenshotParsed(parsed);
-      setMode('review');
-    } catch (err) {
-      showBanner('Failed to parse screenshot. Please enter manually.', 'error');
-      setMode('manual');
-    } finally {
-      setScreenshotLoading(false);
-    }
-  }, [showBanner]);
-
-  const handleAddFromReview = (pos) => {
-    addPosition(pos);
-    setScreenshotParsed(null);
-    setMode('list');
-    showBanner('Position added from screenshot!', 'success');
-  };
-
-  const handleManualAdd = (pos) => {
-    addPosition(pos);
-    setMode('list');
-    showBanner('Position added!', 'success');
-  };
-
-  return (
-    <div className="animate-fade-up px-4 pt-4 pb-6 flex flex-col gap-4">
-      {/* Add buttons */}
-      {mode === 'list' && (
-        <div className="flex gap-3">
-          <button
-            onClick={() => {
-              fileInputRef.current?.click();
-            }}
-            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg text-sm border font-bold"
-            style={{ borderColor: 'rgba(255,255,255,0.12)', color: '#E0F0E8', minHeight: 44 }}
-          >
-            <Camera size={15} />
-            Screenshot
-          </button>
-          <button
-            onClick={() => setMode('manual')}
-            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-sm"
-            style={{ background: '#00DC78', color: '#070C09', minHeight: 44 }}
-          >
-            <Plus size={15} />
-            Manual
-          </button>
+        <p className="text-muted-text text-xs">
+          {chain.ticker} ${activeLeg?.strike} {activeLeg?.optionType} — current market price to buy back
+        </p>
+        <div className="flex flex-col gap-1">
+          <label className="text-muted-text text-xs uppercase tracking-wider">Current market price / share</label>
           <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/heic,image/*"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleImageUpload(file);
-              e.target.value = '';
-            }}
+            type="number"
+            step="0.01"
+            className="w-full px-3 py-2.5 rounded-lg text-sm bg-[#070C09] border border-white/10 focus:border-primary-green outline-none text-primary-text"
+            value={val}
+            onChange={e => setVal(e.target.value)}
+            autoFocus
           />
         </div>
-      )}
+        {activeLeg && parseFloat(val) > 0 && (
+          <div className="text-xs text-muted-text">
+            P&L on this leg: <span className="font-bold" style={{ color: (activeLeg.premiumCollected - parseFloat(val)) >= 0 ? '#22c55e' : '#ef4444' }}>
+              {fmt$((activeLeg.premiumCollected - parseFloat(val)) * (activeLeg.contracts || 1) * 100)}
+            </span>
+            {' '}·{' '}
+            <span className="font-bold" style={{ color: ((activeLeg.premiumCollected - parseFloat(val)) / activeLeg.premiumCollected * 100) >= 0 ? '#22c55e' : '#ef4444' }}>
+              {(((activeLeg.premiumCollected - parseFloat(val)) / (activeLeg.premiumCollected || 1)) * 100).toFixed(0)}% capture
+            </span>
+          </div>
+        )}
+        <button
+          onClick={() => { onSave(parseFloat(val)); onClose(); }}
+          className="w-full py-3 rounded-lg font-bold text-sm"
+          style={{ background: '#00DC78', color: '#070C09', minHeight: 48 }}
+        >
+          Update
+        </button>
+      </div>
+    </div>
+  );
+}
 
-      {/* Screenshot loading */}
-      {mode === 'screenshot' && screenshotLoading && (
-        <div className="rounded-lg p-6 card-border flex flex-col items-center gap-3" style={{ background: '#0D1410' }}>
-          <span className="spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
-          <span className="text-muted-text text-sm">Parsing screenshot with AI…</span>
+// ─── Chain detail card ────────────────────────────────────────────────────────
+
+function ChainCard({ chain, setActiveTab }) {
+  const [expanded, setExpanded] = useState(false);
+  const [showPremiumModal, setShowPremiumModal] = useState(false);
+  const { updateCurrentPremium, deleteChain, showBanner } = useStore();
+
+  const activeLeg = getActiveLeg(chain);
+  const { totalCollected, totalPaid, netRealized } = getChainSummary(chain);
+  const unrealized = chain.status === 'open' ? (activeLeg
+    ? (activeLeg.premiumCollected - (activeLeg.currentPremium ?? activeLeg.premiumCollected)) * (activeLeg.contracts || 1) * 100
+    : 0) : 0;
+  const netChainPnL = netRealized + unrealized;
+  const capPct = activeLeg ? getCapturePct(chain, activeLeg.currentPremium) : 0;
+  const status = activeLeg ? getStatus(chain, activeLeg.currentPremium) : STATUS.YELLOW;
+  const dte = activeLeg ? daysTo(activeLeg.expiration) : null;
+  const trueCostBasis = getTrueCostBasis(chain);
+  const rollCount = (chain.legs || []).filter(l => l.legType === 'roll_open').length;
+
+  const pnlColor = netChainPnL >= 0 ? '#22c55e' : '#ef4444';
+  const capColor = capPct >= 50 ? '#22c55e' : capPct >= 25 ? '#f59e0b' : '#ef4444';
+
+  const expiryFmt = (exp) => exp
+    ? new Date(exp + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : '';
+
+  return (
+    <div className="rounded-xl border border-white/07 bg-[#0D1410] overflow-hidden">
+      {/* Chain header row */}
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center gap-3 px-3 py-3 hover:bg-white/03 transition-colors"
+      >
+        {/* Ticker + badges */}
+        <div className="flex-1 min-w-0 text-left">
+          <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+            <span className="font-bold text-sm text-primary-text">{chain.ticker}</span>
+            <TypeBadge type={activeLeg?.optionType || chain.type} />
+            {chain.status === 'open' && <StatusBadge status={status} />}
+            {chain.status === 'closed' && (
+              <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(122,154,136,0.2)', color: '#7A9A88', fontSize: 10 }}>CLOSED</span>
+            )}
+            {rollCount > 0 && (
+              <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(85,153,255,0.15)', color: '#5599FF', fontSize: 10 }}>
+                {rollCount}x rolled
+              </span>
+            )}
+          </div>
+          {activeLeg && (
+            <span className="text-muted-text text-xs">
+              ${activeLeg.strike} · {expiryFmt(activeLeg.expiration)}{dte != null ? ` · ${dte}d` : ''}
+              {activeLeg.contracts > 1 ? ` · ${activeLeg.contracts}x` : ''}
+            </span>
+          )}
+        </div>
+
+        {/* P&L + chevron */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-right">
+            <div className="text-xs font-bold" style={{ color: pnlColor }}>
+              {netChainPnL >= 0 ? '+' : ''}{fmt$(netChainPnL)}
+            </div>
+            {chain.status === 'open' && (
+              <div className="text-xs" style={{ color: capColor }}>{capPct >= 0 ? '+' : ''}{capPct.toFixed(0)}%</div>
+            )}
+          </div>
+          {expanded ? <ChevronUp size={14} className="text-muted-text" /> : <ChevronDown size={14} className="text-muted-text" />}
+        </div>
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="border-t border-white/07">
+          {/* Thesis */}
+          {chain.thesis && (
+            <div className="px-3 py-2.5 border-b border-white/07">
+              <p className="text-muted-text text-xs leading-relaxed">{chain.thesis}</p>
+              <ConvictionBadge level={chain.conviction} />
+            </div>
+          )}
+
+          {/* Leg history */}
+          <div className="px-3 py-3 border-b border-white/07">
+            <p className="text-muted-text text-xs uppercase tracking-wider mb-2">Leg History</p>
+            <div className="flex flex-col gap-1.5">
+              {(chain.legs || []).map((leg, i) => {
+                const isActive = (leg.legType === 'open' || leg.legType === 'roll_open')
+                  && i === (chain.legs || []).length - 1 && chain.status === 'open';
+                const legPnL = (leg.premiumCollected - leg.premiumPaid) * (leg.contracts || 1) * 100;
+
+                return (
+                  <div key={leg.id} className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-text w-4 shrink-0">{isActive ? '→' : '✓'}</span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-primary-text">
+                        ${leg.strike} {leg.optionType || chain.type} {expiryFmt(leg.expiration)}
+                      </span>
+                      <span className="text-muted-text ml-1 text-xs">{leg.filledAt}</span>
+                    </div>
+                    <span className="shrink-0 font-bold" style={{
+                      color: isActive ? '#7A9A88' : legPnL >= 0 ? '#22c55e' : '#ef4444'
+                    }}>
+                      {isActive
+                        ? `+${fmt$(leg.premiumCollected * (leg.contracts || 1) * 100)} open`
+                        : `${legPnL >= 0 ? '+' : ''}${fmt$(legPnL)}`
+                      }
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Chain summary */}
+          <div className="px-3 py-3 border-b border-white/07">
+            <p className="text-muted-text text-xs uppercase tracking-wider mb-2">Chain Summary</p>
+            <div className="flex flex-col gap-1 text-xs">
+              <div className="flex justify-between">
+                <span className="text-muted-text">Total collected</span>
+                <span className="text-primary-green font-bold">+{fmt$(totalCollected)}</span>
+              </div>
+              {totalPaid > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-text">Total paid (rolls/close)</span>
+                  <span className="text-danger-red font-bold">-{fmt$(totalPaid)}</span>
+                </div>
+              )}
+              {chain.status === 'open' && unrealized !== 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-text">Unrealized</span>
+                  <span className="font-bold" style={{ color: unrealized >= 0 ? '#22c55e' : '#ef4444' }}>
+                    {unrealized >= 0 ? '+' : ''}{fmt$(unrealized)}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-white/07 pt-1 mt-0.5">
+                <span className="text-primary-text font-bold">Net chain P&L</span>
+                <span className="font-bold" style={{ color: pnlColor }}>
+                  {netChainPnL >= 0 ? '+' : ''}{fmt$(netChainPnL)}
+                  {netChainPnL < 0 && ' ⚠️'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* True cost basis (for open chains with multiple legs) */}
+          {chain.status === 'open' && trueCostBasis != null && rollCount > 0 && (
+            <div className="px-3 py-3 border-b border-white/07">
+              <p className="text-muted-text text-xs uppercase tracking-wider mb-2">Assignment Scenario</p>
+              <div className="flex flex-col gap-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-text">True cost basis</span>
+                  <span className="text-primary-text font-bold">{fmt$(trueCostBasis)}/sh</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-text">Strike</span>
+                  <span className="text-primary-text">{fmt$(activeLeg?.strike || 0)}/sh</span>
+                </div>
+                <p className="text-muted-text mt-1">
+                  Need CC at ${(trueCostBasis || 0).toFixed(2)}+ to break even if assigned
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Update premium + actions */}
+          {chain.status === 'open' && activeLeg && (
+            <div className="px-3 py-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-muted-text">Current premium</span>
+                <button
+                  onClick={() => setShowPremiumModal(true)}
+                  className="flex items-center gap-1 text-info-blue"
+                  style={{ minHeight: 36 }}
+                >
+                  <Edit3 size={11} />
+                  {fmt$(activeLeg.currentPremium ?? activeLeg.premiumCollected)}/sh
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setActiveTab('log')}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-bold border border-white/12 text-muted-text"
+                  style={{ minHeight: 44 }}
+                >
+                  <RotateCcw size={12} />
+                  Roll
+                </button>
+                <button
+                  onClick={() => setActiveTab('log')}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-bold"
+                  style={{ background: '#22c55e', color: '#070C09', minHeight: 44 }}
+                >
+                  ✓ Close
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm(`Delete ${chain.ticker} chain? This cannot be undone.`)) {
+                      deleteChain(chain.id);
+                      showBanner(`${chain.ticker} chain deleted`, 'info');
+                    }
+                  }}
+                  className="flex items-center justify-center py-2.5 px-2.5 rounded-lg border border-white/12 text-muted-text"
+                  style={{ minHeight: 44, minWidth: 44 }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Review parsed */}
-      {mode === 'review' && screenshotParsed && (
-        <ScreenshotReview
-          parsed={screenshotParsed}
-          onConfirm={handleAddFromReview}
-          onCancel={() => { setMode('list'); setScreenshotParsed(null); }}
+      {/* Update premium modal */}
+      {showPremiumModal && activeLeg && (
+        <UpdatePremiumModal
+          chain={chain}
+          activeLeg={activeLeg}
+          onClose={() => setShowPremiumModal(false)}
+          onSave={(val) => updateCurrentPremium(chain.id, activeLeg.id, val)}
         />
       )}
+    </div>
+  );
+}
 
-      {/* Manual form */}
-      {mode === 'manual' && (
-        <ManualForm onAdd={handleManualAdd} onCancel={() => setMode('list')} />
-      )}
+// ─── Main Positions Tab ───────────────────────────────────────────────────────
 
-      {/* Empty state */}
-      {mode === 'list' && sortedPositions.length === 0 && (
-        <div className="rounded-lg p-8 card-border flex flex-col items-center gap-3" style={{ background: '#0D1410' }}>
-          <span className="text-4xl">📋</span>
-          <span className="text-muted-text text-sm text-center">No open positions yet. Add one using screenshot or manual entry.</span>
+export default function Positions({ setActiveTab }) {
+  const { chains } = useStore();
+  const [filter, setFilter] = useState('open'); // 'open' | 'closed' | 'all'
+
+  const filteredChains = useMemo(() => {
+    const base = filter === 'all' ? chains : chains.filter(c => c.status === filter);
+    // Sort open: ACT→WATCH→CLOSE→YELLOW→GREEN; closed: by closeDate desc
+    if (filter === 'closed') {
+      return [...base].sort((a, b) => (b.closeDate || '').localeCompare(a.closeDate || ''));
+    }
+    const order = { ACT: 0, WATCH: 1, CLOSE: 2, YELLOW: 3, GREEN: 4 };
+    return [...base].sort((a, b) => {
+      if (a.status === 'closed') return 1;
+      if (b.status === 'closed') return -1;
+      const aA = getActiveLeg(a);
+      const bA = getActiveLeg(b);
+      const sa = getStatus(a, aA?.currentPremium);
+      const sb = getStatus(b, bA?.currentPremium);
+      return (order[sa] ?? 5) - (order[sb] ?? 5);
+    });
+  }, [chains, filter]);
+
+  const openCount = chains.filter(c => c.status === 'open').length;
+  const closedCount = chains.filter(c => c.status === 'closed').length;
+
+  return (
+    <div className="animate-fade-up px-4 pt-4 pb-6 flex flex-col gap-3">
+      {/* Filter tabs */}
+      <div className="flex rounded-lg overflow-hidden border border-white/10">
+        {[
+          { id: 'open', label: `Open (${openCount})` },
+          { id: 'closed', label: `Closed (${closedCount})` },
+          { id: 'all', label: 'All' },
+        ].map(f => (
+          <button
+            key={f.id}
+            onClick={() => setFilter(f.id)}
+            className="flex-1 py-2.5 text-xs font-bold transition-colors"
+            style={{
+              background: filter === f.id ? '#00DC78' : 'transparent',
+              color: filter === f.id ? '#070C09' : '#7A9A88',
+              minHeight: 44,
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {filteredChains.length === 0 ? (
+        <div className="text-center py-12 text-muted-text text-xs">
+          {filter === 'open' ? 'No open positions. Tap Log Trade to add one.' : 'No closed positions yet.'}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {filteredChains.map(chain => (
+            <ChainCard key={chain.id} chain={chain} setActiveTab={setActiveTab} />
+          ))}
         </div>
       )}
 
-      {/* Position cards */}
-      {mode === 'list' && sortedPositions.map((pos) => (
-        <PositionCard
-          key={pos.id}
-          pos={pos}
-          stockPrices={stockPrices}
-          updatePosition={updatePosition}
-          closePosition={closePosition}
-          markRolled={markRolled}
-          removePosition={removePosition}
-          isFocused={focusTicker === pos.ticker}
-        />
-      ))}
+      {/* Add button */}
+      <button
+        onClick={() => setActiveTab('log')}
+        className="w-full py-3.5 rounded-xl font-bold text-sm mt-2"
+        style={{ background: '#00DC78', color: '#070C09', minHeight: 52 }}
+      >
+        + Log New Trade
+      </button>
     </div>
   );
 }

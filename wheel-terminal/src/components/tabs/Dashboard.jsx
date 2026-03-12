@@ -1,260 +1,225 @@
 import { useMemo } from 'react';
-import { Camera, Plus } from 'lucide-react';
+import { Search, Plus } from 'lucide-react';
+import useStore from '../../store';
 import {
-  capturePct, pnlFor, daysTo, getStatus, getAdvice,
-  STATUS, calcPortfolio, fmt$, fmtPct,
+  getActiveLeg, getCapturePct, getStatus,
+  getMonthlyRealized, fmt$, fmtPct, STATUS, getChainSummary,
 } from '../../utils/calculations';
 
-const MONTHLY_TARGET = 3500;
-const MILESTONE_1 = 2275;
+// ─── Status dot + label (per PRD color system) ────────────────────────────────
 
-function MetricCard({ label, value, sub, valueColor, className = '' }) {
+const STATUS_CONFIG = {
+  [STATUS.CLOSE]:  { dot: '#22c55e', label: '→ CLOSE',  labelColor: '#22c55e' },
+  [STATUS.GREEN]:  { dot: '#22c55e', label: '→ HOLD',   labelColor: '#22c55e' },
+  [STATUS.YELLOW]: { dot: '#f59e0b', label: '→ HOLD',   labelColor: '#7A9A88' },
+  [STATUS.WATCH]:  { dot: '#ef4444', label: '→ WATCH',  labelColor: '#ef4444' },
+  [STATUS.ACT]:    { dot: '#ef4444', label: '→ ACT',    labelColor: '#ef4444' },
+};
+
+function PositionRow({ chain, onTap }) {
+  const active = getActiveLeg(chain);
+  if (!active) return null;
+
+  const capPct = getCapturePct(chain, active.currentPremium);
+  const status = getStatus(chain, active.currentPremium);
+  const cfg = STATUS_CONFIG[status];
+
+  const expiryStr = active.expiration
+    ? new Date(active.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })
+    : '';
+
+  const pnlColor = capPct >= 0 ? '#22c55e' : '#ef4444';
+
   return (
-    <div
-      className={`shrink-0 flex flex-col gap-1 rounded-lg p-3 card-border ${className}`}
-      style={{ background: '#0D1410', minWidth: 120 }}
+    <button
+      onClick={onTap}
+      className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/5 transition-colors"
     >
-      <span className="text-muted-text text-xs uppercase tracking-widest">{label}</span>
-      <span className="font-bold text-base" style={{ color: valueColor || '#E0F0E8' }}>
-        {value}
+      <span className="shrink-0 w-2 h-2 rounded-full" style={{ background: cfg.dot }} />
+      <div className="flex-1 min-w-0 text-left">
+        <span className="font-bold text-sm text-primary-text">{chain.ticker}</span>
+        <span className="text-muted-text text-xs ml-2">
+          ${active.strike}{active.optionType === 'CSP' ? 'P' : 'C'} {expiryStr}
+        </span>
+      </div>
+      <span className="text-xs font-bold shrink-0" style={{ color: pnlColor }}>
+        {capPct >= 0 ? '+' : ''}{capPct.toFixed(0)}%
       </span>
-      {sub && <span className="text-muted-text text-xs">{sub}</span>}
+      <span className="text-xs font-bold shrink-0 w-16 text-right" style={{ color: cfg.labelColor }}>
+        {cfg.label}
+      </span>
+    </button>
+  );
+}
+
+function MonthlyBar({ realized, target, daysLeft }) {
+  const pct = target > 0 ? Math.min(100, (realized / target) * 100) : 0;
+  const dailyNeed = daysLeft > 0 ? Math.max(0, target - realized) / daysLeft : 0;
+  const daysElapsed = 31 - daysLeft;
+  const expectedByNow = target > 0 ? (daysElapsed / 31) * target : 0;
+  const onPace = realized >= expectedByNow * 0.80;
+
+  const barColor = pct >= 75 ? '#22c55e' : pct >= 40 ? '#f59e0b' : '#ef4444';
+  const statusText = onPace ? 'On pace' : pct >= 50 ? 'Slightly behind' : 'Behind pace';
+
+  return (
+    <div className="rounded-xl p-4 border border-white/07 bg-[#0D1410]">
+      <div className="flex justify-between items-baseline mb-1">
+        <span className="text-muted-text text-xs uppercase tracking-widest">Monthly Income</span>
+        <span className="text-xs font-bold" style={{ color: barColor }}>{statusText}</span>
+      </div>
+      <div className="flex items-baseline gap-1 mb-2">
+        <span className="font-bold text-2xl" style={{ color: barColor }}>{fmt$(realized, 0)}</span>
+        <span className="text-muted-text text-sm">/ {fmt$(target, 0)}</span>
+      </div>
+      <div className="relative h-2.5 rounded-full overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.07)' }}>
+        <div className="progress-bar-fill h-full rounded-full" style={{ width: `${pct}%`, background: barColor }} />
+      </div>
+      <div className="flex justify-between text-xs text-muted-text">
+        <span>{fmtPct(pct, 0)} complete</span>
+        <span>{daysLeft}d left · need {fmt$(dailyNeed, 0)}/day</span>
+      </div>
     </div>
   );
 }
 
-function StatusBadge({ status }) {
-  const map = {
-    CLOSE_NOW: { label: 'CLOSE', bg: '#00DC78', color: '#070C09' },
-    DANGER: { label: 'DANGER', bg: '#FF4060', color: '#fff' },
-    ROLL_NOW: { label: 'ROLL', bg: '#FFB800', color: '#070C09' },
-    CHECK_21: { label: 'CHECK', bg: '#5599FF', color: '#fff' },
-    WATCH: { label: 'WATCH', bg: 'rgba(255,184,0,0.18)', color: '#FFB800', border: '#FFB800' },
-    HOLD: { label: 'HOLD', bg: 'rgba(122,154,136,0.15)', color: '#7A9A88' },
-  };
-  const s = map[status] || map.HOLD;
-  const isDanger = status === 'DANGER';
-  return (
-    <span
-      className={`text-xs font-bold px-2 py-0.5 rounded ${isDanger ? 'animate-pulse-danger' : ''}`}
-      style={{
-        background: s.bg,
-        color: s.color,
-        border: s.border ? `1px solid ${s.border}` : undefined,
-        fontSize: 10,
-      }}
-    >
-      {s.label}
-    </span>
-  );
-}
+export default function Dashboard({ setActiveTab }) {
+  const { chains, settings } = useStore();
 
-function TypeBadge({ type }) {
-  return (
-    <span
-      className="text-xs font-bold px-1.5 py-0.5 rounded"
-      style={{
-        background: type === 'CSP' ? 'rgba(0,200,255,0.15)' : 'rgba(170,136,255,0.15)',
-        color: type === 'CSP' ? '#00C8FF' : '#AA88FF',
-        fontSize: 10,
-      }}
-    >
-      {type}
-    </span>
-  );
-}
+  const now = new Date();
+  const hour = now.getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
-export default function Dashboard({ positions, sortedPositions, settings, stockPrices, navigateToPosition, setActiveTab }) {
-  const { totalPnl, totalCollateral, cashAvailable, monthlyProgress, alerts } = useMemo(
-    () => calcPortfolio(positions, stockPrices, settings),
-    [positions, stockPrices, settings]
+  const openChains = useMemo(() => chains.filter(c => c.status === 'open'), [chains]);
+
+  const monthlyRealized = getMonthlyRealized(chains, now.getFullYear(), now.getMonth());
+
+  const target = settings.monthlyTarget || 3750;
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const daysLeft = lastDay - now.getDate();
+
+  const sortedChains = useMemo(() => {
+    const order = { ACT: 0, WATCH: 1, CLOSE: 2, YELLOW: 3, GREEN: 4 };
+    return [...openChains].sort((a, b) => {
+      const aActive = getActiveLeg(a);
+      const bActive = getActiveLeg(b);
+      const sa = getStatus(a, aActive?.currentPremium);
+      const sb = getStatus(b, bActive?.currentPremium);
+      return (order[sa] ?? 5) - (order[sb] ?? 5);
+    });
+  }, [openChains]);
+
+  const attentionCount = useMemo(
+    () => sortedChains.filter(c => {
+      const active = getActiveLeg(c);
+      const s = getStatus(c, active?.currentPremium);
+      return s === STATUS.ACT || s === STATUS.WATCH || s === STATUS.CLOSE;
+    }).length,
+    [sortedChains]
   );
 
-  const monthlyTarget = settings.monthlyTarget || MONTHLY_TARGET;
-  const totalCapital = settings.totalCapital || 100000;
-  const deployedPct = totalCapital > 0 ? (totalCollateral / totalCapital) * 100 : 0;
-  const progressClamped = Math.min(100, Math.max(0, monthlyProgress));
-  const hasAlerts = alerts.length > 0;
-
-  const pnlColor = totalPnl >= 0 ? '#00DC78' : '#FF4060';
-  const progressColor =
-    progressClamped >= 75 ? '#00DC78' : progressClamped >= 40 ? '#FFB800' : '#FF4060';
+  const nowYear = now.getFullYear();
+  const nowMonth = now.getMonth();
+  const closedThisMonth = useMemo(
+    () => chains.filter(c => {
+      if (c.status !== 'closed' || !c.closeDate) return false;
+      const d = new Date(c.closeDate);
+      return d.getFullYear() === nowYear && d.getMonth() === nowMonth;
+    }),
+    [chains, nowYear, nowMonth]
+  );
 
   return (
-    <div className="animate-fade-up px-4 pt-4 pb-6 flex flex-col gap-4">
-      {/* Metric Cards — horizontal scroll */}
-      <div className="flex gap-3 overflow-x-auto no-scrollbar pb-1">
-        <MetricCard
-          label="OPEN P&L"
-          value={fmt$(totalPnl)}
-          valueColor={pnlColor}
-          sub={totalPnl >= 0 ? 'unrealized gain' : 'unrealized loss'}
-        />
-        <MetricCard
-          label="MONTHLY"
-          value={fmtPct(progressClamped)}
-          valueColor={progressColor}
-          sub={`${fmt$(totalPnl)} of ${fmt$(monthlyTarget, 0)}`}
-        />
-        <MetricCard
-          label="DEPLOYED"
-          value={fmt$(totalCollateral, 0)}
-          valueColor="#5599FF"
-          sub={`${fmtPct(deployedPct, 0)} of capital`}
-        />
-        <MetricCard
-          label="CASH FREE"
-          value={fmt$(cashAvailable, 0)}
-          valueColor="#00C8FF"
-          sub="available"
-        />
-        <MetricCard
-          label="POSITIONS"
-          value={positions.length}
-          valueColor={hasAlerts ? '#FFB800' : '#E0F0E8'}
-          sub={hasAlerts ? `${alerts.length} need action` : 'all clear'}
-        />
+    <div className="animate-fade-up px-4 pt-5 pb-6 flex flex-col gap-4">
+
+      {/* Greeting */}
+      <div>
+        <h1 className="text-primary-text font-bold text-base">{greeting}, Yash</h1>
+        <p className="text-muted-text text-xs mt-0.5">
+          {dateStr}
+          <span className="mx-2 opacity-30">·</span>
+          VIX: <span className="text-primary-text font-bold">—</span>
+        </p>
       </div>
 
-      {/* Monthly Progress Bar */}
-      <div className="rounded-lg p-4 card-border" style={{ background: '#0D1410' }}>
-        <div className="flex justify-between items-center mb-2">
-          <span className="text-muted-text text-xs uppercase tracking-widest">Monthly Target Progress</span>
-          <span className="text-xs font-bold" style={{ color: progressColor }}>
-            {fmtPct(progressClamped, 1)}
+      {/* Monthly income bar — realized only */}
+      <MonthlyBar realized={monthlyRealized} target={target} daysLeft={daysLeft} />
+
+      {/* Positions list */}
+      <div className="rounded-xl border border-white/07 bg-[#0D1410] overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/07">
+          <span className="text-muted-text text-xs uppercase tracking-widest">
+            Positions ({openChains.length} open)
           </span>
-        </div>
-        <div className="relative h-3 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)' }}>
-          <div
-            className="progress-bar-fill h-full rounded-full"
-            style={{ width: `${progressClamped}%`, background: progressColor }}
-          />
-          {/* Milestone markers */}
-          <div
-            className="absolute top-0 bottom-0 w-px"
-            style={{ left: `${(MILESTONE_1 / monthlyTarget) * 100}%`, background: 'rgba(255,255,255,0.3)' }}
-          />
-        </div>
-        <div className="flex justify-between mt-1">
-          <span className="text-muted-text text-xs">$0</span>
-          <span className="text-muted-text text-xs">${MILESTONE_1.toLocaleString()}</span>
-          <span className="text-muted-text text-xs">${monthlyTarget.toLocaleString()}</span>
-        </div>
-      </div>
-
-      {/* Action Required */}
-      {hasAlerts && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-warning-yellow text-xs font-bold tracking-widest uppercase">
-              ⚡ Needs Action
+          {attentionCount > 0 && (
+            <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>
+              ⚠️ {attentionCount} need attention
             </span>
-            <span
-              className="text-xs font-bold px-2 py-0.5 rounded-full"
-              style={{ background: 'rgba(255,184,0,0.15)', color: '#FFB800' }}
-            >
-              {alerts.length}
-            </span>
-          </div>
-          {alerts.map((pos, i) => {
-            const sp = stockPrices[pos.ticker];
-            const advice = getAdvice(pos, sp?.price);
-            const cap = capturePct(pos);
-            const dte = daysTo(pos.expiry);
-            return (
-              <button
-                key={pos.id}
-                onClick={() => navigateToPosition(pos.ticker)}
-                className="w-full text-left rounded-lg p-3 card-border animate-fade-up"
-                style={{
-                  background: '#0D1410',
-                  animationDelay: `${i * 50}ms`,
-                  borderLeft: `3px solid ${advice.color}`,
-                }}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-sm text-primary-text">{pos.ticker}</span>
-                    <TypeBadge type={pos.type} />
-                    <StatusBadge status={advice.status} />
-                  </div>
-                  <span className="text-muted-text text-xs">{dte}d / {cap.toFixed(0)}%</span>
-                </div>
-                <p className="text-muted-text text-xs leading-relaxed">{advice.message}</p>
-              </button>
-            );
-          })}
+          )}
         </div>
-      )}
-
-      {/* Positions Summary Table */}
-      <div className="rounded-lg card-border overflow-hidden" style={{ background: '#0D1410' }}>
-        <div className="px-3 py-2 border-b" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
-          <span className="text-muted-text text-xs uppercase tracking-widest">All Positions</span>
-        </div>
-        {sortedPositions.length === 0 ? (
-          <div className="px-3 py-6 text-center text-muted-text text-xs">
-            No open positions. Add one below.
+        {sortedChains.length === 0 ? (
+          <div className="px-3 py-8 text-center text-muted-text text-xs">
+            No open positions. Tap Log Trade to add one.
           </div>
         ) : (
-          <div className="divide-y" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-            {sortedPositions.map((pos) => {
-              const sp = stockPrices[pos.ticker];
-              const status = getStatus(pos, sp?.price);
-              const cap = capturePct(pos);
-              const dte = daysTo(pos.expiry);
-              return (
-                <button
-                  key={pos.id}
-                  onClick={() => navigateToPosition(pos.ticker)}
-                  className="w-full flex items-center px-3 py-2.5 gap-2 hover:bg-white/5 transition-colors text-left"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-sm text-primary-text">{pos.ticker}</span>
-                      <TypeBadge type={pos.type} />
-                    </div>
-                    <span className="text-muted-text text-xs">${pos.strike} · {dte}d</span>
-                  </div>
-                  {/* Mini capture bar */}
-                  <div className="flex flex-col items-end gap-1 shrink-0" style={{ minWidth: 72 }}>
-                    <span className="text-xs font-bold" style={{ color: cap >= 65 ? '#00DC78' : '#FFB800' }}>
-                      {cap.toFixed(0)}%
-                    </span>
-                    <div className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)', width: 60 }}>
-                      <div
-                        className="progress-bar-fill h-full rounded-full"
-                        style={{ width: `${cap}%`, background: cap >= 65 ? '#00DC78' : '#FFB800' }}
-                      />
-                    </div>
-                  </div>
-                  <StatusBadge status={status} />
-                </button>
-              );
-            })}
+          <div className="divide-y divide-white/05">
+            {sortedChains.map(chain => (
+              <PositionRow key={chain.id} chain={chain} onTap={() => setActiveTab('positions')} />
+            ))}
           </div>
         )}
       </div>
 
-      {/* Quick Actions */}
+      {/* Quick action buttons */}
       <div className="flex gap-3">
         <button
-          onClick={() => setActiveTab('positions')}
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-sm border"
-          style={{ borderColor: 'rgba(255,255,255,0.12)', color: '#E0F0E8', minHeight: 44 }}
+          onClick={() => setActiveTab('scan')}
+          className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-sm border border-white/12 text-primary-text hover:bg-white/05 transition-colors"
+          style={{ minHeight: 52 }}
         >
-          <Camera size={16} />
-          Screenshot
+          <Search size={16} />
+          Daily Scan
         </button>
         <button
-          onClick={() => setActiveTab('positions')}
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-sm"
-          style={{ background: '#00DC78', color: '#070C09', minHeight: 44 }}
+          onClick={() => setActiveTab('log')}
+          className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-sm"
+          style={{ background: '#00DC78', color: '#070C09', minHeight: 52 }}
         >
           <Plus size={16} />
-          Manual Entry
+          Log Trade
         </button>
       </div>
+
+      {/* Closed this month recap */}
+      {closedThisMonth.length > 0 && (
+        <div className="rounded-xl border border-white/07 bg-[#0D1410] overflow-hidden">
+          <div className="px-3 py-2.5 border-b border-white/07">
+            <span className="text-muted-text text-xs uppercase tracking-widest">Closed This Month</span>
+          </div>
+          <div className="divide-y divide-white/05">
+            {closedThisMonth.map(c => {
+              const { netRealized } = getChainSummary(c);
+              return (
+                <div key={c.id} className="flex items-center justify-between px-3 py-2 text-xs">
+                  <span className="text-muted-text w-20 shrink-0">{c.closeDate}</span>
+                  <span className="text-primary-text font-bold flex-1">{c.ticker}</span>
+                  <span className="font-bold" style={{ color: netRealized >= 0 ? '#22c55e' : '#ef4444' }}>
+                    {netRealized >= 0 ? '+' : ''}{fmt$(netRealized)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-between items-center px-3 py-2.5 border-t border-white/07">
+            <span className="text-muted-text text-xs">Total realized</span>
+            <span className="font-bold text-sm" style={{ color: monthlyRealized >= 0 ? '#22c55e' : '#ef4444' }}>
+              {monthlyRealized >= 0 ? '+' : ''}{fmt$(monthlyRealized)}
+            </span>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
